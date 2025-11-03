@@ -22,6 +22,50 @@ func NewRedisCache(client redis.Cmdable, dbIndex uint8) *RedisCache {
 	return &RedisCache{client, dbIndex}
 }
 
+// 获得Redis客户端句柄
+func (r *RedisCache) GetRedis() (*redis.Cmdable, uint8) {
+	return &r.client, r.dbIndex
+}
+func (r *RedisCache) ListPush(ctx context.Context, listName string, value ...any) error {
+	err := r.client.RPush(ctx, listName, value...).Err()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *RedisCache) ListPop(ctx context.Context, listName string) (string, error) {
+	val, err := r.client.RPop(ctx, listName).Result()
+	if err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
+func (r *RedisCache) ListUnshift(ctx context.Context, listName string, value ...any) error {
+	err := r.client.LPush(ctx, listName, value...).Err()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *RedisCache) ListShift(ctx context.Context, listName string) (string, error) {
+	val, err := r.client.LPop(ctx, listName).Result()
+	if err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
+func (r *RedisCache) LLength(ctx context.Context, listName string) (int64, error) {
+	val, err := r.client.LLen(ctx, listName).Result()
+	if err != nil {
+		return 0, err
+	}
+	return val, nil
+}
+
 func (r *RedisCache) HSet(ctx context.Context, hashName string, key string, value any) error {
 	err := r.client.HSet(ctx, hashName, key, value).Err()
 	if err != nil {
@@ -60,6 +104,22 @@ func (r *RedisCache) HExpire(ctx context.Context, hashName string, expiration ti
 		return err
 	}
 	return nil
+}
+
+func (r *RedisCache) HKeys(ctx context.Context, hashName string) ([]string, error) {
+	val, err := r.client.HKeys(ctx, hashName).Result()
+	if err != nil {
+		return nil, err
+	}
+	return val, nil
+}
+
+func (r *RedisCache) HGetAll(ctx context.Context, hashName string) (map[string]string, error) {
+	val, err := r.client.HGetAll(ctx, hashName).Result()
+	if err != nil {
+		return nil, err
+	}
+	return val, err
 }
 
 func (r *RedisCache) Get(ctx context.Context, key string) (any, error) {
@@ -128,5 +188,9 @@ func (r *RedisCache) tryClear(curTryIndex *int, totalTry int, errHonk types.ErrH
 
 // 关闭Redis连接
 func (r *RedisCache) Destroy(ctx context.Context) {
-	r.client.(*redis.Client).Close()
+	cli, ok := r.client.(*redis.Client)
+	if !ok {
+		return
+	}
+	cli.Close()
 }
