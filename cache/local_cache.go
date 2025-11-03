@@ -5,6 +5,7 @@ import (
 	"github.com/Aonaufly/goLightGenericLib/common"
 	"github.com/Aonaufly/goLightGenericLib/manager"
 	"github.com/Aonaufly/goLightGenericLib/myErrors"
+	"github.com/Aonaufly/goLightGenericLib/types"
 	"github.com/google/uuid"
 	"strings"
 	"sync"
@@ -107,7 +108,7 @@ func (b *LocalCache) Set(ctx context.Context, key string, value any, expiration 
 	return nil
 }
 
-func (b *LocalCache) Clear(ctx context.Context) error {
+func (b *LocalCache) Clear(ctx context.Context, errHonk types.ErrHookProgress) {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	for k, v := range b.dataMap {
@@ -116,7 +117,9 @@ func (b *LocalCache) Clear(ctx context.Context) error {
 			delete(b.dataMap, k)
 		}
 	}
-	return nil
+	if errHonk != nil {
+		errHonk(0, 0, nil)
+	}
 }
 
 func (b *LocalCache) Destroy(ctx context.Context) {

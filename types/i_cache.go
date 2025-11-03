@@ -11,7 +11,7 @@ type ICache interface {
 	Set(ctx context.Context, key string, value any, expiration time.Duration) error
 	Delete(ctx context.Context, key string) (any, error)
 	//删除所有的缓存
-	Clear(ctx context.Context) error
+	Clear(ctx context.Context, errHonk ErrHookProgress)
 	//销毁
 	Destroy(ctx context.Context)
 }
