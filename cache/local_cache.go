@@ -136,17 +136,17 @@ func (b *LocalCache) Destroy(ctx context.Context) {
 	b.pool = nil
 }
 
-func (b *LocalCache) Delete(ctx context.Context, key string) (any, error) {
+func (b *LocalCache) Delete(ctx context.Context, key string) error {
 	b.mutex.TryRLock()
 	b.mutex.Unlock()
 	defer b.mutex.Unlock()
 	v, ok := b.dataMap[key]
 	if !ok {
-		return nil, nil
+		return myErrors.ErrLocalKeyNotExist
 	}
 	b.pool.Put(v)
 	delete(b.dataMap, key)
-	return v, nil
+	return nil
 }
 
 type localCacheItem struct {

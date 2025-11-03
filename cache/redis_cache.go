@@ -12,12 +12,54 @@ import (
 // RedisCache类
 type RedisCache struct {
 	client redis.Cmdable
+	//Redis的库号
+	dbIndex uint8
 }
 
 // 构造函数
-func NewRedisCache(client redis.Cmdable) *RedisCache {
+func NewRedisCache(client redis.Cmdable, dbIndex uint8) *RedisCache {
 
-	return &RedisCache{client}
+	return &RedisCache{client, dbIndex}
+}
+
+func (r *RedisCache) HSet(ctx context.Context, hashName string, key string, value any) error {
+	err := r.client.HSet(ctx, hashName, key, value).Err()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *RedisCache) HGet(ctx context.Context, hashName string, key string) (any, error) {
+	val, err := r.client.HGet(ctx, hashName, key).Result()
+	if err != nil {
+		return nil, err
+	}
+	return val, nil
+}
+
+func (r *RedisCache) HLength(ctx context.Context, hashName string) (int64, error) {
+	val, err := r.client.HLen(ctx, hashName).Result()
+	if err != nil {
+		return 0, err
+	}
+	return val, nil
+}
+
+func (r *RedisCache) HDelete(ctx context.Context, hashName string, key string) error {
+	err := r.client.HDel(ctx, hashName, key).Err()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *RedisCache) HExpire(ctx context.Context, hashName string, expiration time.Duration) error {
+	err := r.client.HExpire(ctx, hashName, expiration).Err()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *RedisCache) Get(ctx context.Context, key string) (any, error) {
@@ -35,9 +77,9 @@ func (r *RedisCache) Set(ctx context.Context, key string, value any, expiration 
 	return nil
 }
 
-func (r *RedisCache) Delete(ctx context.Context, key string) (any, error) {
+func (r *RedisCache) Delete(ctx context.Context, key string) error {
 	_, err := r.client.Del(ctx, key).Result()
-	return nil, err
+	return err
 }
 
 // 慎用,清除掉此库的所有缓存资源
