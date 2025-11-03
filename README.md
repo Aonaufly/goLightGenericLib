@@ -27,3 +27,7 @@ go get -u github.com/Aonaufly/goLightGenericLib
 ```
 本地缓存
 ```
+### 4，redis_cache.go
+```
+redis缓存
+```
