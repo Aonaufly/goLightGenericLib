@@ -63,20 +63,37 @@ func (rl *RedisDistributedLockStr) TryLock(
 		}
 		types.GetInstallFixIntervalRetryManager().Put(&retry)
 	} else {
-		manager.GetInstallCountDownManager().AddCd(
-			"___countdown_cd_redis_lock_str"+rl.uniqueId,
-			false,
-			true,
-			interval,
-			1,
-			rl.countdown4Lock, //提供钩子函数
-			callback,
-			retry,
-			uuid.New().String(),
-			ctx,
-			key,
-			expiration,
-		)
+		if retry.Interval <= 0 { //立刻进行重试操作
+			rl.countdown4Lock(
+				"___countdown_cd_redis_lock_str"+rl.uniqueId,
+				0,
+				1,
+				true,
+				[]any{
+					callback,
+					retry,
+					uuid.New().String(),
+					ctx,
+					key,
+					expiration,
+				},
+			)
+		} else {
+			manager.GetInstallCountDownManager().AddCd(
+				"___countdown_cd_redis_lock_str"+rl.uniqueId,
+				false,
+				true,
+				interval,
+				1,
+				rl.countdown4Lock, //提供钩子函数
+				callback,
+				retry,
+				uuid.New().String(),
+				ctx,
+				key,
+				expiration,
+			)
+		}
 	}
 }
 
@@ -100,20 +117,37 @@ func (rl *RedisDistributedLockStr) countdown4Lock(flag string, curCD time.Durati
 				}
 				types.GetInstallFixIntervalRetryManager().Put(&retry)
 			} else {
-				manager.GetInstallCountDownManager().AddCd(
-					"___countdown_cd_redis_lock_str"+rl.uniqueId,
-					false,
-					true,
-					interval,
-					1,
-					rl.countdown4Lock, //提供钩子函数
-					callback,
-					retry,
-					val,
-					ctx,
-					key,
-					expiration,
-				)
+				if retry.Interval <= 0 { //立刻执行重试
+					rl.countdown4Lock(
+						"___countdown_cd_redis_lock_str"+rl.uniqueId,
+						0,
+						1,
+						true,
+						[]any{
+							callback,
+							retry,
+							val,
+							ctx,
+							key,
+							expiration,
+						},
+					)
+				} else {
+					manager.GetInstallCountDownManager().AddCd(
+						"___countdown_cd_redis_lock_str"+rl.uniqueId,
+						false,
+						true,
+						interval,
+						1,
+						rl.countdown4Lock, //提供钩子函数
+						callback,
+						retry,
+						val,
+						ctx,
+						key,
+						expiration,
+					)
+				}
 			}
 		} else {
 			if callback != nil {
@@ -131,12 +165,12 @@ func (rl *RedisDistributedLockStr) countdown4Lock(flag string, curCD time.Durati
 
 // 只加一次锁，有可能失败
 func (rl *RedisDistributedLockStr) stepLock(ctx context.Context, key string, val string, expiration time.Duration) (*RedisDistributedRenewalAndUnlockStr, error) {
-	ctxt, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	//原子操作
-	ok := rl.client.Eval(ctxt, lua2lock, []string{key}, []any{val, expiration}).String()
+	ok := rl.client.Eval(ctx, lua2lock, []string{key}, []any{val, expiration}).String()
 	cancel()
 	select {
-	case <-ctxt.Done():
+	case <-ctx.Done():
 		return nil, myErrors.ErrRedisTimeout
 	default:
 		if ok == "" {
