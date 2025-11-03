@@ -13,8 +13,12 @@ var (
 	ErrFailedToRedisPreemptLock = errors.New("redis cache: failed preempt lock")
 	//Redis没有持有此锁(分布式锁)
 	ErrRedisLockNotHold = errors.New("redis cache: lock not hold")
-	//Redis分布式锁签约失败
-	ErrRedisAtRenewingStatusFailed = errors.New("redis cache: at renewing status failed")
+	//Redis分布式锁正在进行续约 。。。。。。。。。。。
+	ErrRedisAtRenewingStatus = errors.New("redis cache: at renewing status")
 	//Redis分布式锁key没有解锁的时候
 	ErrRedisUnLockFailedToUnExistKey = errors.New("redis cache: key not exist")
+	//加锁失败需要重试
+	ErrRedisLockFailedNeedTry = errors.New("redis cache: lock need try")
+	//操作超时
+	ErrRedisTimeout = errors.New("redis cache: timeout")
 )
