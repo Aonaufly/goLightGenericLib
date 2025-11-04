@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-type ErrHookProgress4RedisLock func(item *RedisDistributedRenewalAndUnlockStr, err error)
+type ErrHookProgress4RedisLock func(item *RedisDistributedRenewalAndUnlock, err error)
 
 var (
 	//go:embed luaStr/unlock_redis.lua
@@ -25,9 +25,9 @@ var (
 )
 
 // 分布式锁 str 处理
-type RedisDistributedLockStr struct {
+type RedisDistributedLock struct {
 	client redis.Cmdable
-	item   *RedisDistributedRenewalAndUnlockStr
+	item   *RedisDistributedRenewalAndUnlock
 	//是否正在加锁过程中。。。
 	isLockingStatus bool
 	//唯一ID，countdown有效
@@ -35,22 +35,22 @@ type RedisDistributedLockStr struct {
 }
 
 // 重置
-func (rl *RedisDistributedLockStr) Reset(client redis.Cmdable) {
+func (rl *RedisDistributedLock) Reset(client redis.Cmdable) {
 	rl.client = client
 }
 
-func (rl *RedisDistributedLockStr) Clear() {
+func (rl *RedisDistributedLock) Clear() {
 	manager.GetInstallCountDownManager().RemoveCd("___countdown_cd_redis_lock_str" + rl.uniqueId)
 	rl.isLockingStatus = false
 	rl.client = nil
 	if rl.item != nil {
-		GetInstallRedisDistributeRenewalAndUnlockStrResManager().Put(rl.item)
+		GetInstallRedisDistributeRenewalAndUnlockResManager().Put(rl.item)
 		rl.item = nil
 	}
 }
 
 // 可以尝试多次加锁，避免一次锁定失败 API ***************************************************************************************************
-func (rl *RedisDistributedLockStr) TryLock(
+func (rl *RedisDistributedLock) TryLock(
 	ctx context.Context,
 	key string,
 	expiration time.Duration,
@@ -106,7 +106,7 @@ func (rl *RedisDistributedLockStr) TryLock(
 	}
 }
 
-func (rl *RedisDistributedLockStr) countdown4Lock(flag string, curCD time.Duration, repeat uint64, isComplete bool, parameterList []any) {
+func (rl *RedisDistributedLock) countdown4Lock(flag string, curCD time.Duration, repeat uint64, isComplete bool, parameterList []any) {
 	if !strings.HasPrefix(flag, "___countdown_cd_redis_lock_str") {
 		return
 	}
@@ -173,7 +173,7 @@ func (rl *RedisDistributedLockStr) countdown4Lock(flag string, curCD time.Durati
 }
 
 // 只加一次锁，有可能失败
-func (rl *RedisDistributedLockStr) stepLock(ctx context.Context, key string, val string, expiration time.Duration) (*RedisDistributedRenewalAndUnlockStr, error) {
+func (rl *RedisDistributedLock) stepLock(ctx context.Context, key string, val string, expiration time.Duration) (*RedisDistributedRenewalAndUnlock, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	//原子操作
 	ok := rl.client.Eval(ctx, lua2lock, []string{key}, []any{val, expiration}).String()
@@ -187,7 +187,7 @@ func (rl *RedisDistributedLockStr) stepLock(ctx context.Context, key string, val
 			return nil, myErrors.ErrFailedToRedisPreemptLock
 		} else if ok == "OK" {
 			//计入对象池，用来提高性能, 获得一个续约/解锁的item
-			item, e := GetInstallRedisDistributeRenewalAndUnlockStrResManager().Get(
+			item, e := GetInstallRedisDistributeRenewalAndUnlockResManager().Get(
 				rl.client,
 				key,
 				val,
@@ -203,7 +203,7 @@ func (rl *RedisDistributedLockStr) stepLock(ctx context.Context, key string, val
 }
 
 // 续约和释放锁处理（Redis分布式锁）----------------------------------------------------------------------------------------------
-type RedisDistributedRenewalAndUnlockStr struct {
+type RedisDistributedRenewalAndUnlock struct {
 	client redis.Cmdable
 	//唯一ID，countdown有效
 	uniqueId   string
@@ -214,7 +214,7 @@ type RedisDistributedRenewalAndUnlockStr struct {
 	isStatusRenewing bool
 }
 
-func (rl *RedisDistributedRenewalAndUnlockStr) Reset(client redis.Cmdable, key string, value string, expiration time.Duration) {
+func (rl *RedisDistributedRenewalAndUnlock) Reset(client redis.Cmdable, key string, value string, expiration time.Duration) {
 	rl.client = client
 	rl.key = key
 	rl.value = value
@@ -222,14 +222,14 @@ func (rl *RedisDistributedRenewalAndUnlockStr) Reset(client redis.Cmdable, key s
 	rl.isStatusRenewing = false
 }
 
-func (rl *RedisDistributedRenewalAndUnlockStr) Clear() {
+func (rl *RedisDistributedRenewalAndUnlock) Clear() {
 	rl.isStatusRenewing = false
 	manager.GetInstallCountDownManager().RemoveCd("___countdown_cd_redis_unlock_renewing_str" + rl.uniqueId)
 	rl.client = nil
 }
 
 // 续约要进行原子操作： 考虑lua, 只能续约1次
-func (l *RedisDistributedRenewalAndUnlockStr) Renewal(ctx context.Context) error {
+func (l *RedisDistributedRenewalAndUnlock) Renewal(ctx context.Context) error {
 	cnt, err := l.client.Eval(ctx, lua2Renewal, []string{l.key}, []any{l.value, l.expiration.Seconds()}).Int64()
 	if err != nil {
 		return err
@@ -245,7 +245,7 @@ func (l *RedisDistributedRenewalAndUnlockStr) Renewal(ctx context.Context) error
 // everyRetry 每次续约的重试策略
 // expiration 间隔多长时间开始续约
 // callback 钩子函数
-func (l *RedisDistributedRenewalAndUnlockStr) AutoRenewal(maxRenewingCnt uint, expiration time.Duration, everyRetry types.FixIntervalRetry, callback types.ErrHookProgress) {
+func (l *RedisDistributedRenewalAndUnlock) AutoRenewal(maxRenewingCnt uint, expiration time.Duration, everyRetry types.FixIntervalRetry, callback types.ErrHookProgress) {
 	if l.isStatusRenewing == false {
 		l.isStatusRenewing = true
 	} else {
@@ -259,7 +259,7 @@ func (l *RedisDistributedRenewalAndUnlockStr) AutoRenewal(maxRenewingCnt uint, e
 	l.startCD(expiration, maxRenewingCnt, &curRenewingCnt, &everyRetry, callback)
 }
 
-func (l *RedisDistributedRenewalAndUnlockStr) startCD(expiration time.Duration, maxRenewingCnt uint, curRenewingCnt *uint, everyRetry *types.FixIntervalRetry, callback types.ErrHookProgress) {
+func (l *RedisDistributedRenewalAndUnlock) startCD(expiration time.Duration, maxRenewingCnt uint, curRenewingCnt *uint, everyRetry *types.FixIntervalRetry, callback types.ErrHookProgress) {
 	interval, ok := everyRetry.Next()
 	if !ok {
 		//超过重试的次数， 不能再进行重试了
@@ -299,22 +299,26 @@ func (l *RedisDistributedRenewalAndUnlockStr) startCD(expiration time.Duration, 
 	}
 }
 
-func (l *RedisDistributedRenewalAndUnlockStr) countdown4Renewing(flag string, curCD time.Duration, repeat uint64, isComplete bool, parameterList []any) {
+func (l *RedisDistributedRenewalAndUnlock) countdown4Renewing(flag string, curCD time.Duration, repeat uint64, isComplete bool, parameterList []any) {
 	if flag != "___countdown_cd_redis_unlock_renewing_str"+l.uniqueId {
 		return
 	}
+	everyRetry, _ := parameterList[1].(*types.FixIntervalRetry)
+	callback, _ := parameterList[2].(types.ErrHookProgress)
+	maxRenewingCnt, _ := parameterList[3].(uint)
+	curRenewingCnt, _ := parameterList[4].(*uint)
 	if l.isStatusRenewing == false {
+		if callback != nil {
+			callback(int(*curRenewingCnt), int(maxRenewingCnt), context.DeadlineExceeded) //超时
+		}
+		types.GetInstallFixIntervalRetryManager().Put(everyRetry)
 		return
 	}
-	everyRetry, _ := parameterList[1].(*types.FixIntervalRetry)
 	var cxtSeconds time.Duration = 2 + (time.Duration)(everyRetry.CurIndex) //重试的时候加时间
 	ctx, cannel := context.WithTimeout(context.Background(), time.Second*cxtSeconds)
 	//原子操作
 	cnt, err := l.client.Eval(ctx, lua2Renewal, []string{l.key}, []any{l.value, l.expiration.Seconds()}).Int64()
 	cannel()
-	callback := parameterList[2].(types.ErrHookProgress)
-	maxRenewingCnt := parameterList[3].(uint)
-	curRenewingCnt := parameterList[4].(*uint)
 	select {
 	case <-ctx.Done(): //超时
 		l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, callback)
@@ -358,8 +362,8 @@ func (l *RedisDistributedRenewalAndUnlockStr) countdown4Renewing(flag string, cu
 	}
 }
 
-// 解锁要进行原子操作： 考虑lua
-func (l *RedisDistributedRenewalAndUnlockStr) UnLock(ctx context.Context) error {
+// 解锁要进行原子操作： 考虑lua Api ***********************************************************************
+func (l *RedisDistributedRenewalAndUnlock) UnLock(ctx context.Context) error {
 	if l.isStatusRenewing == true { //通知取消重试Redis分布式锁续约
 		l.isStatusRenewing = false
 		manager.GetInstallCountDownManager().RemoveCd("___countdown_cd_redis_unlock_renewing_str" + l.uniqueId)

@@ -11,26 +11,26 @@ import (
 )
 
 var (
-	instLockPtr             atomic.Pointer[RedisDistributeLockStrResManager]
-	instRenewalAndUnlockPtr atomic.Pointer[RedisDistributeRenewalAndUnlockStrResManager]
+	instLockPtr             atomic.Pointer[RedisDistributeLockResManager]
+	instRenewalAndUnlockPtr atomic.Pointer[RedisDistributeRenewalAndUnlockResManager]
 )
 
 // 加锁资源 --------------------------------------------------------------------------------------------------------------
-type RedisDistributeLockStrResManager struct {
+type RedisDistributeLockResManager struct {
 	pool *sync.Pool
 	cap  int32
 	cnt  int32
 }
 
 // Redis 分布式锁资源管理
-func GetInstallRedisDistributeLockStrResManager() *RedisDistributeLockStrResManager {
+func GetInstallRedisDistributeLockResManager() *RedisDistributeLockResManager {
 	if p := instLockPtr.Load(); p != nil {
 		return p
 	}
-	newInst := &RedisDistributeLockStrResManager{
+	newInst := &RedisDistributeLockResManager{
 		pool: &sync.Pool{
 			New: func() interface{} {
-				return &RedisDistributedLockStr{
+				return &RedisDistributedLock{
 					isLockingStatus: false,
 					uniqueId:        uuid.New().String(),
 				}
@@ -44,12 +44,12 @@ func GetInstallRedisDistributeLockStrResManager() *RedisDistributeLockStrResMana
 	return instLockPtr.Load()
 }
 
-func (r *RedisDistributeLockStrResManager) Get(client redis.Cmdable) (*RedisDistributedLockStr, error) {
+func (r *RedisDistributeLockResManager) Get(client redis.Cmdable) (*RedisDistributedLock, error) {
 	if atomic.LoadInt32(&r.cnt) > 0 {
 		atomic.AddInt32(&r.cnt, -1)
 	}
 	item := r.pool.Get()
-	val, ok := item.(*RedisDistributedLockStr)
+	val, ok := item.(*RedisDistributedLock)
 	if !ok {
 		return nil, errors.New("没有得到*RedisDistributedLockStr资源")
 	}
@@ -57,13 +57,13 @@ func (r *RedisDistributeLockStrResManager) Get(client redis.Cmdable) (*RedisDist
 	return val, nil
 }
 
-func (r *RedisDistributeLockStrResManager) Put(item *RedisDistributedLockStr) error {
+func (r *RedisDistributeLockResManager) Put(item *RedisDistributedLock) error {
 	if item == nil {
-		return errors.New("*RedisDistributedLockStr == nil")
+		return errors.New("*RedisDistributedLock == nil")
 	}
 	item.Clear()
 	if r.cnt >= r.cap {
-		return errors.New("*RedisDistributedLockStr is full")
+		return errors.New("*RedisDistributedLock is full")
 	}
 	atomic.AddInt32(&r.cnt, 1)
 	r.pool.Put(item)
@@ -71,20 +71,20 @@ func (r *RedisDistributeLockStrResManager) Put(item *RedisDistributedLockStr) er
 }
 
 // 续约/解锁资源 ----------------------------------------------------------------------------------------------------------
-type RedisDistributeRenewalAndUnlockStrResManager struct {
+type RedisDistributeRenewalAndUnlockResManager struct {
 	pool *sync.Pool
 	cap  int32
 	cnt  int32
 }
 
-func GetInstallRedisDistributeRenewalAndUnlockStrResManager() *RedisDistributeRenewalAndUnlockStrResManager {
+func GetInstallRedisDistributeRenewalAndUnlockResManager() *RedisDistributeRenewalAndUnlockResManager {
 	if p := instRenewalAndUnlockPtr.Load(); p != nil {
 		return p
 	}
-	newInst := &RedisDistributeRenewalAndUnlockStrResManager{
+	newInst := &RedisDistributeRenewalAndUnlockResManager{
 		pool: &sync.Pool{
 			New: func() interface{} {
-				return &RedisDistributedRenewalAndUnlockStr{
+				return &RedisDistributedRenewalAndUnlock{
 					uniqueId: uuid.New().String(),
 				}
 			},
@@ -97,25 +97,25 @@ func GetInstallRedisDistributeRenewalAndUnlockStrResManager() *RedisDistributeRe
 	return instRenewalAndUnlockPtr.Load()
 }
 
-func (r *RedisDistributeRenewalAndUnlockStrResManager) Get(client redis.Cmdable, key string, value string, expiration time.Duration) (*RedisDistributedRenewalAndUnlockStr, error) {
+func (r *RedisDistributeRenewalAndUnlockResManager) Get(client redis.Cmdable, key string, value string, expiration time.Duration) (*RedisDistributedRenewalAndUnlock, error) {
 	if atomic.LoadInt32(&r.cnt) > 0 {
 		atomic.AddInt32(&r.cnt, -1)
 	}
 	item := r.pool.Get()
-	val, ok := item.(*RedisDistributedRenewalAndUnlockStr)
+	val, ok := item.(*RedisDistributedRenewalAndUnlock)
 	if !ok {
-		return nil, errors.New("*RedisDistributedRenewalAndUnlockStr == nil")
+		return nil, errors.New("*RedisDistributedRenewalAndUnlock == nil")
 	}
 	val.Reset(client, key, value, expiration)
 	return val, nil
 }
-func (r *RedisDistributeRenewalAndUnlockStrResManager) Put(item *RedisDistributedRenewalAndUnlockStr) error {
+func (r *RedisDistributeRenewalAndUnlockResManager) Put(item *RedisDistributedRenewalAndUnlock) error {
 	if item == nil {
-		return errors.New("*RedisDistributedRenewalAndUnlockStr == nil")
+		return errors.New("*RedisDistributedRenewalAndUnlock == nil")
 	}
 	item.Clear()
 	if atomic.LoadInt32(&r.cnt) >= r.cap {
-		return errors.New("*RedisDistributedRenewalAndUnlockStr is full")
+		return errors.New("*RedisDistributedRenewalAndUnlock is full")
 	}
 	atomic.AddInt32(&r.cnt, 1)
 	r.pool.Put(item)

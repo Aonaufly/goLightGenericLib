@@ -32,8 +32,7 @@ go get -u github.com/Aonaufly/goLightGenericLib
 redis缓存
 ```
 ### 5, redis分布式锁
-#### 5.1 string
-获得加锁单元类RedisDistributeLockStrResManager管理器
+获得加锁单元类RedisDistributeLockResManager管理器
 ```
-GetInstallRedisDistributeLockStrResManager() *RedisDistributeLockStrResManager 
+GetInstallRedisDistributeLockResManager() *RedisDistributeLockResManager 
 ```
