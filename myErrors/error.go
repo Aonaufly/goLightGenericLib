@@ -15,6 +15,8 @@ var (
 	ErrRedisLockNotHold = errors.New("redis cache: lock not hold")
 	//Redis分布式锁正在进行续约 。。。。。。。。。。。
 	ErrRedisAtRenewingStatus = errors.New("redis cache: at renewing status")
+	//正在尝试加锁。。。。。。
+	ErrRedisAtLockingStatus = errors.New("redis cache: at locking status")
 	//Redis分布式锁key没有解锁的时候
 	ErrRedisUnLockFailedToUnExistKey = errors.New("redis cache: key not exist")
 	//加锁失败需要重试

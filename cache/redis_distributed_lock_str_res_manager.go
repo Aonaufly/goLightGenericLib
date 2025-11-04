@@ -22,6 +22,7 @@ type RedisDistributeLockStrResManager struct {
 	cnt  int32
 }
 
+// Redis 分布式锁资源管理
 func GetInstallRedisDistributeLockStrResManager() *RedisDistributeLockStrResManager {
 	if p := instLockPtr.Load(); p != nil {
 		return p
@@ -113,8 +114,10 @@ func (r *RedisDistributeRenewalAndUnlockStrResManager) Put(item *RedisDistribute
 		return errors.New("*RedisDistributedRenewalAndUnlockStr == nil")
 	}
 	item.Clear()
-	if r.cnt >= r.cap {
+	if atomic.LoadInt32(&r.cnt) >= r.cap {
 		return errors.New("*RedisDistributedRenewalAndUnlockStr is full")
 	}
+	atomic.AddInt32(&r.cnt, 1)
+	r.pool.Put(item)
 	return nil
 }

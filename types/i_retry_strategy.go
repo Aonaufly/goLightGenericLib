@@ -33,6 +33,10 @@ func (f *FixIntervalRetry) Next() (time.Duration, bool) {
 	return f.Interval, f.CurIndex <= f.Max
 }
 
+func (f *FixIntervalRetry) IsOver() bool {
+	return f.CurIndex >= f.Max
+}
+
 var (
 	instPtr atomic.Pointer[FixIntervalRetryManager]
 )

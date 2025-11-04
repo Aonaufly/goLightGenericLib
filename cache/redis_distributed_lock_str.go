@@ -40,6 +40,7 @@ func (rl *RedisDistributedLockStr) Reset(client redis.Cmdable) {
 }
 
 func (rl *RedisDistributedLockStr) Clear() {
+	manager.GetInstallCountDownManager().RemoveCd("___countdown_cd_redis_lock_str" + rl.uniqueId)
 	rl.isLockingStatus = false
 	rl.client = nil
 	if rl.item != nil {
@@ -48,7 +49,7 @@ func (rl *RedisDistributedLockStr) Clear() {
 	}
 }
 
-// 可以尝试多次加锁 API ***************************************************************************************************
+// 可以尝试多次加锁，避免一次锁定失败 API ***************************************************************************************************
 func (rl *RedisDistributedLockStr) TryLock(
 	ctx context.Context,
 	key string,
@@ -56,6 +57,14 @@ func (rl *RedisDistributedLockStr) TryLock(
 	retry types.FixIntervalRetry,
 	callback ErrHookProgress4RedisLock,
 ) {
+	if rl.isLockingStatus == false {
+		rl.isLockingStatus = true
+	} else {
+		if callback != nil {
+			callback(nil, myErrors.ErrRedisAtLockingStatus)
+		}
+		return
+	}
 	interval, ok := retry.Next()
 	if !ok {
 		if callback != nil {
@@ -177,7 +186,7 @@ func (rl *RedisDistributedLockStr) stepLock(ctx context.Context, key string, val
 			//别人抢到了锁
 			return nil, myErrors.ErrFailedToRedisPreemptLock
 		} else if ok == "OK" {
-			//计入对象池，用来提高性能
+			//计入对象池，用来提高性能, 获得一个续约/解锁的item
 			item, e := GetInstallRedisDistributeRenewalAndUnlockStrResManager().Get(
 				rl.client,
 				key,
@@ -232,55 +241,61 @@ func (l *RedisDistributedRenewalAndUnlockStr) Renewal(ctx context.Context) error
 }
 
 // 自动续约要进行原子操作： 考虑lua,
-// maxRenewingCnt 本次续约的次数
-// tryTotal 每次需要尝试次数
+// maxRenewingCnt 续约的此时
+// everyRetry 每次续约的重试策略
 // expiration 间隔多长时间开始续约
 // callback 钩子函数
-func (l *RedisDistributedRenewalAndUnlockStr) AutoRenewal(maxRenewingCnt uint, tryTotal uint, expiration time.Duration, callback types.ErrHookProgress) {
+func (l *RedisDistributedRenewalAndUnlockStr) AutoRenewal(maxRenewingCnt uint, expiration time.Duration, everyRetry types.FixIntervalRetry, callback types.ErrHookProgress) {
 	if l.isStatusRenewing == false {
 		l.isStatusRenewing = true
 	} else {
+		//正在进行续约处理
 		if callback != nil {
-			callback(0, int(maxRenewingCnt), myErrors.ErrRedisAtRenewingStatus)
+			callback(everyRetry.CurIndex, everyRetry.Max, myErrors.ErrRedisAtRenewingStatus)
 		}
 		return
 	}
-	var tryIndex uint = 0
 	var curRenewingCnt uint = 0
-	l.startCD(expiration, maxRenewingCnt, &curRenewingCnt, tryTotal, &tryIndex, callback)
+	l.startCD(expiration, maxRenewingCnt, &curRenewingCnt, &everyRetry, callback)
 }
 
-func (l *RedisDistributedRenewalAndUnlockStr) startCD(expiration time.Duration, maxRenewingCnt uint, curRenewingCnt *uint, tryTotal uint, tryIndex *uint, callback types.ErrHookProgress) {
-	if *tryIndex == 0 {
-		manager.GetInstallCountDownManager().AddCd(
-			"___countdown_cd_redis_unlock_renewing_str"+l.uniqueId,
-			false,
-			false,
-			expiration,
-			1,
-			l.countdown4Renewing, //提供钩子函数
-			expiration,
-			tryTotal,
-			tryIndex,
-			callback,
-			maxRenewingCnt,
-			curRenewingCnt,
-		)
+func (l *RedisDistributedRenewalAndUnlockStr) startCD(expiration time.Duration, maxRenewingCnt uint, curRenewingCnt *uint, everyRetry *types.FixIntervalRetry, callback types.ErrHookProgress) {
+	interval, ok := everyRetry.Next()
+	if !ok {
+		//超过重试的次数， 不能再进行重试了
+		types.GetInstallFixIntervalRetryManager().Put(everyRetry)
+		if callback != nil {
+			callback(int(*curRenewingCnt), int(maxRenewingCnt), context.DeadlineExceeded) //超时
+		}
 	} else {
-		//重新尝试续约
-		l.countdown4Renewing(
-			"___countdown_cd_redis_unlock_renewing_str"+l.uniqueId,
-			0,
-			1,
-			true,
-			[]any{
+		if interval <= 0 || everyRetry.CurIndex > 1 { //立即执行
+			l.countdown4Renewing(
+				"___countdown_cd_redis_unlock_renewing_str"+l.uniqueId,
+				0,
+				1,
+				true,
+				[]any{
+					expiration,
+					everyRetry,
+					callback,
+					maxRenewingCnt,
+					curRenewingCnt},
+			)
+		} else {
+			manager.GetInstallCountDownManager().AddCd(
+				"___countdown_cd_redis_unlock_renewing_str"+l.uniqueId,
+				false,
+				false,
+				interval,
+				1,
+				l.countdown4Renewing, //提供钩子函数
 				expiration,
-				tryTotal,
-				tryIndex,
+				everyRetry,
 				callback,
 				maxRenewingCnt,
-				curRenewingCnt},
-		)
+				curRenewingCnt,
+			)
+		}
 	}
 }
 
@@ -291,47 +306,54 @@ func (l *RedisDistributedRenewalAndUnlockStr) countdown4Renewing(flag string, cu
 	if l.isStatusRenewing == false {
 		return
 	}
-	curIndexPtr := parameterList[2].(*uint)
-	*curIndexPtr = *curIndexPtr + 1
-	var cxtSeconds time.Duration = 2 + (time.Duration)(*curIndexPtr) //重试的时候加时间
+	everyRetry, _ := parameterList[1].(*types.FixIntervalRetry)
+	var cxtSeconds time.Duration = 2 + (time.Duration)(everyRetry.CurIndex) //重试的时候加时间
 	ctx, cannel := context.WithTimeout(context.Background(), time.Second*cxtSeconds)
+	//原子操作
 	cnt, err := l.client.Eval(ctx, lua2Renewal, []string{l.key}, []any{l.value, l.expiration.Seconds()}).Int64()
 	cannel()
-	callback := parameterList[3].(types.ErrHookProgress)
-	isCompleteCnt := *curIndexPtr >= parameterList[1].(uint)
-	maxRenewingCnt := parameterList[4].(uint)
-	curRenewingCnt := parameterList[5].(*uint)
-	if isCompleteCnt {
-		if err != nil {
-			if callback != nil {
-				callback(int(*curRenewingCnt), int(maxRenewingCnt), err)
+	callback := parameterList[2].(types.ErrHookProgress)
+	maxRenewingCnt := parameterList[3].(uint)
+	curRenewingCnt := parameterList[4].(*uint)
+	select {
+	case <-ctx.Done(): //超时
+		l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, callback)
+	default:
+		if everyRetry.IsOver() {
+			types.GetInstallFixIntervalRetryManager().Put(everyRetry)
+			if err != nil {
+				if callback != nil {
+					callback(int(*curRenewingCnt), int(maxRenewingCnt), err)
+				}
+				return
 			}
-			return
-		}
-		if cnt != 1 {
-			if callback != nil {
-				callback(int(*curRenewingCnt), int(maxRenewingCnt), myErrors.ErrRedisLockNotHold)
-			}
-			return
-		}
-	} else {
-		if err != nil {
-			if err == context.DeadlineExceeded {
-				//重试,续约失败
-				l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, parameterList[1].(uint), curIndexPtr, callback)
+			if cnt != 1 {
+				if callback != nil {
+					callback(int(*curRenewingCnt), int(maxRenewingCnt), myErrors.ErrRedisLockNotHold)
+				}
 				return
 			}
 		} else {
-			*curIndexPtr = 0 //重置try次数
-			if callback != nil {
-				callback(int(*curRenewingCnt), int(maxRenewingCnt), nil)
+			if err != nil {
+				if err == context.DeadlineExceeded {
+					//重试,续约失败
+					l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, callback)
+					return
+				}
+			} else {
+				everyRetry.CurIndex = 0 //重置try次数
+				if callback != nil {
+					callback(int(*curRenewingCnt), int(maxRenewingCnt), nil)
+				}
+				if *curRenewingCnt < maxRenewingCnt {
+					//还需要继续续约
+					*curRenewingCnt++
+					l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, callback)
+				} else {
+					types.GetInstallFixIntervalRetryManager().Put(everyRetry)
+				}
+				return
 			}
-			if *curRenewingCnt < maxRenewingCnt {
-				//还需要继续续约
-				*curRenewingCnt++
-				l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, parameterList[1].(uint), curIndexPtr, callback)
-			}
-			return
 		}
 	}
 }
