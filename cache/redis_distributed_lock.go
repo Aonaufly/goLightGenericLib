@@ -35,7 +35,7 @@ type RedisDistributedLock struct {
 	//唯一ID，countdown有效
 	uniqueId string
 	//实现singleflight抢锁机制
-	g *singleflight.Group
+	g singleflight.Group
 }
 
 // 重置
@@ -53,7 +53,38 @@ func (rl *RedisDistributedLock) Clear() {
 	}
 }
 
-// #region singleflight抢锁
+//#region singleflight抢锁
+
+// 自动singleflight加锁（非常高并发并且热点集中的极端情况下使用，慎用）
+func (rl *RedisDistributedLock) AutoSingleFightLock(
+	ctx context.Context,
+	key string,
+	expiration time.Duration,
+	timeout time.Duration,
+	retry *types.FixIntervalRetry,
+) (*RedisDistributedRenewalAndUnlock, error) {
+	for {
+		var flag bool = false
+		resCh := rl.g.DoChan(key, func() (interface{}, error) {
+			flag = true
+			return rl.AutoLock(ctx, key, expiration, timeout, retry)
+		})
+		select {
+		case res := <-resCh:
+			if flag {
+				rl.g.Forget(key)
+				if res.Err != nil {
+					return nil, res.Err
+				}
+				return res.Val.(*RedisDistributedRenewalAndUnlock), nil
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// 阻塞式加锁重试方法
 func (rl *RedisDistributedLock) AutoLock(
 	ctx context.Context,
 	key string,
