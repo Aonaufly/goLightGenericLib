@@ -66,7 +66,7 @@ func (rl *RedisDistributedLock) AutoLock(
 	for {
 		lctx, cancel := context.WithTimeout(ctx, timeout)
 		res, err := rl.client.Eval(lctx, lua2lock, []string{key}, []any{value, expiration.Seconds()}).Result()
-		if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			types.GetInstallFixIntervalRetryManager().Put(retry)
 			return nil, err
 		}
@@ -109,6 +109,7 @@ func (rl *RedisDistributedLock) AutoLockWithHook(
 	ctx context.Context,
 	key string,
 	expiration time.Duration,
+	timeout time.Duration,
 	retry types.FixIntervalRetry,
 	callback ErrHookProgress4RedisLock,
 ) {
@@ -140,6 +141,7 @@ func (rl *RedisDistributedLock) AutoLockWithHook(
 					ctx,
 					key,
 					expiration,
+					timeout,
 				},
 			)
 		} else {
@@ -156,6 +158,7 @@ func (rl *RedisDistributedLock) AutoLockWithHook(
 				ctx,
 				key,
 				expiration,
+				timeout,
 			)
 		}
 	}
@@ -171,7 +174,8 @@ func (rl *RedisDistributedLock) countdown4Lock(flag string, curCD time.Duration,
 	ctx, _ := parameterList[3].(context.Context)
 	key, _ := parameterList[4].(string)
 	expiration, _ := parameterList[5].(time.Duration)
-	item, err := rl.stepLock(ctx, key, val, expiration)
+	timeout, _ := parameterList[6].(time.Duration)
+	item, err := rl.stepLock(ctx, key, val, expiration, timeout)
 	if err != nil {
 		if err == myErrors.ErrRedisLockFailedNeedTry || err == myErrors.ErrRedisTimeout {
 			interval, ok := retry.Next()
@@ -194,6 +198,7 @@ func (rl *RedisDistributedLock) countdown4Lock(flag string, curCD time.Duration,
 							ctx,
 							key,
 							expiration,
+							timeout,
 						},
 					)
 				} else {
@@ -210,6 +215,7 @@ func (rl *RedisDistributedLock) countdown4Lock(flag string, curCD time.Duration,
 						ctx,
 						key,
 						expiration,
+						timeout,
 					)
 				}
 			}
@@ -228,13 +234,13 @@ func (rl *RedisDistributedLock) countdown4Lock(flag string, curCD time.Duration,
 }
 
 // 只加一次锁，有可能失败
-func (rl *RedisDistributedLock) stepLock(ctx context.Context, key string, val string, expiration time.Duration) (*RedisDistributedRenewalAndUnlock, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+func (rl *RedisDistributedLock) stepLock(ctx context.Context, key string, val string, expiration time.Duration, timeout time.Duration) (*RedisDistributedRenewalAndUnlock, error) {
+	tctx, cancel := context.WithTimeout(ctx, timeout)
 	//原子性操作
-	res, err := rl.client.Eval(ctx, lua2lock, []string{key}, []any{val, expiration}).Result()
+	res, err := rl.client.Eval(tctx, lua2lock, []string{key}, []any{val, expiration}).Result()
 	cancel()
 	if err != nil && errors.Is(err, context.DeadlineExceeded) {
-		return nil, err
+		return nil, myErrors.ErrRedisTimeout
 	}
 	if res == "OK" {
 		item, e := GetInstallRedisDistributeRenewalAndUnlockResManager().Get(
@@ -292,10 +298,17 @@ func (l *RedisDistributedRenewalAndUnlock) Renewal(ctx context.Context) error {
 
 // 自动续约要进行原子操作： 考虑lua,
 // maxRenewingCnt 续约的此时
-// everyRetry 每次续约的重试策略
 // expiration 间隔多长时间开始续约
+// timeout 超时
+// everyRetry 每次续约的重试策略
 // callback 钩子函数
-func (l *RedisDistributedRenewalAndUnlock) AutoRenewalWithHook(maxRenewingCnt uint, expiration time.Duration, everyRetry types.FixIntervalRetry, callback types.ErrHookProgress) {
+func (l *RedisDistributedRenewalAndUnlock) AutoRenewalWithHook(
+	maxRenewingCnt uint,
+	expiration time.Duration,
+	timeout time.Duration,
+	everyRetry types.FixIntervalRetry,
+	callback types.ErrHookProgress,
+) {
 	if l.isStatusRenewing == false {
 		l.isStatusRenewing = true
 	} else {
@@ -306,10 +319,10 @@ func (l *RedisDistributedRenewalAndUnlock) AutoRenewalWithHook(maxRenewingCnt ui
 		return
 	}
 	var curRenewingCnt uint = 0
-	l.startCD(expiration, maxRenewingCnt, &curRenewingCnt, &everyRetry, callback)
+	l.startCD(expiration, maxRenewingCnt, &curRenewingCnt, &everyRetry, timeout, callback)
 }
 
-func (l *RedisDistributedRenewalAndUnlock) startCD(expiration time.Duration, maxRenewingCnt uint, curRenewingCnt *uint, everyRetry *types.FixIntervalRetry, callback types.ErrHookProgress) {
+func (l *RedisDistributedRenewalAndUnlock) startCD(expiration time.Duration, maxRenewingCnt uint, curRenewingCnt *uint, everyRetry *types.FixIntervalRetry, timeout time.Duration, callback types.ErrHookProgress) {
 	interval, ok := everyRetry.Next()
 	if !ok {
 		//超过重试的次数， 不能再进行重试了
@@ -329,7 +342,9 @@ func (l *RedisDistributedRenewalAndUnlock) startCD(expiration time.Duration, max
 					everyRetry,
 					callback,
 					maxRenewingCnt,
-					curRenewingCnt},
+					curRenewingCnt,
+					timeout,
+				},
 			)
 		} else {
 			manager.GetInstallCountDownManager().AddCd(
@@ -344,6 +359,7 @@ func (l *RedisDistributedRenewalAndUnlock) startCD(expiration time.Duration, max
 				callback,
 				maxRenewingCnt,
 				curRenewingCnt,
+				timeout,
 			)
 		}
 	}
@@ -357,6 +373,7 @@ func (l *RedisDistributedRenewalAndUnlock) countdown4Renewing(flag string, curCD
 	callback, _ := parameterList[2].(types.ErrHookProgress)
 	maxRenewingCnt, _ := parameterList[3].(uint)
 	curRenewingCnt, _ := parameterList[4].(*uint)
+	timeout, _ := parameterList[5].(time.Duration)
 	if l.isStatusRenewing == false {
 		if callback != nil {
 			callback(int(*curRenewingCnt), int(maxRenewingCnt), context.DeadlineExceeded) //超时
@@ -364,14 +381,14 @@ func (l *RedisDistributedRenewalAndUnlock) countdown4Renewing(flag string, curCD
 		types.GetInstallFixIntervalRetryManager().Put(everyRetry)
 		return
 	}
-	var cxtSeconds time.Duration = 2 + (time.Duration)(everyRetry.CurIndex) //重试的时候加时间
+	var cxtSeconds time.Duration = 2*(time.Duration(everyRetry.CurIndex)-1) + timeout //重试的时候加时间
 	ctx, cannel := context.WithTimeout(context.Background(), time.Second*cxtSeconds)
 	//原子操作
 	cnt, err := l.client.Eval(ctx, lua2Renewal, []string{l.key}, []any{l.value, l.expiration.Seconds()}).Int64()
 	cannel()
 	select {
 	case <-ctx.Done(): //超时
-		l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, callback)
+		l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, timeout, callback)
 	default:
 		if everyRetry.IsOver() {
 			types.GetInstallFixIntervalRetryManager().Put(everyRetry)
@@ -391,18 +408,18 @@ func (l *RedisDistributedRenewalAndUnlock) countdown4Renewing(flag string, curCD
 			if err != nil {
 				if err == context.DeadlineExceeded {
 					//重试,续约失败
-					l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, callback)
+					l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, timeout, callback)
 					return
 				}
 			} else {
-				everyRetry.CurIndex = 0 //重置try次数
+				everyRetry.Clear()
 				if callback != nil {
 					callback(int(*curRenewingCnt), int(maxRenewingCnt), nil)
 				}
 				if *curRenewingCnt < maxRenewingCnt {
 					//还需要继续续约
 					*curRenewingCnt++
-					l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, callback)
+					l.startCD(parameterList[0].(time.Duration), maxRenewingCnt, curRenewingCnt, everyRetry, timeout, callback)
 				} else {
 					types.GetInstallFixIntervalRetryManager().Put(everyRetry)
 				}
