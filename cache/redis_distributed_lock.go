@@ -299,6 +299,7 @@ type RedisDistributedRenewalAndUnlock struct {
 	expiration time.Duration
 	//是不是自动续约中
 	isStatusRenewing bool
+	unlockChan       chan struct{}
 }
 
 func (rl *RedisDistributedRenewalAndUnlock) Reset(client redis.Cmdable, key string, value string, expiration time.Duration) {
@@ -313,6 +314,9 @@ func (rl *RedisDistributedRenewalAndUnlock) Clear() {
 	rl.isStatusRenewing = false
 	manager.GetInstallCountDownManager().RemoveCd("___countdown_cd_redis_unlock_renewing_str" + rl.uniqueId)
 	rl.client = nil
+	for len(rl.unlockChan) > 0 {
+		<-rl.unlockChan
+	}
 }
 
 // 续约要进行原子操作： 考虑lua, 只能续约1次
@@ -327,7 +331,52 @@ func (l *RedisDistributedRenewalAndUnlock) Renewal(ctx context.Context) error {
 	return nil
 }
 
-// 自动续约要进行原子操作： 考虑lua,
+//#refion 自动续约，阻塞版
+
+// 自动续约阻塞版本， 一直续约中知道主动的释放锁
+func (rl *RedisDistributedRenewalAndUnlock) AutoRenewal(
+	interval time.Duration,
+	timeout time.Duration,
+) error {
+	timeoutChan := make(chan struct{}, 1)
+	ticker := time.NewTicker(interval)
+	for {
+		select {
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			err := rl.Renewal(ctx)
+			cancel()
+			if err == context.DeadlineExceeded {
+				timeoutChan <- struct{}{}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		case <-timeoutChan:
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			err := rl.Renewal(ctx)
+			cancel()
+			if err == context.DeadlineExceeded {
+				timeoutChan <- struct{}{}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		case <-rl.unlockChan:
+			//清空chananl中的值
+			for len(rl.unlockChan) > 0 {
+				<-rl.unlockChan
+			}
+			return nil
+		}
+	}
+}
+
+//#endregion
+
+// 自动续约要进行原子操作： 考虑lua, hook版
 // maxRenewingCnt 续约的此时
 // expiration 间隔多长时间开始续约
 // timeout 超时
@@ -462,10 +511,18 @@ func (l *RedisDistributedRenewalAndUnlock) countdown4Renewing(flag string, curCD
 
 // 解锁要进行原子操作： 考虑lua Api ***********************************************************************
 func (l *RedisDistributedRenewalAndUnlock) UnLock(ctx context.Context) error {
+	//是否使用的是阻塞式的自动续约方案
+	var isUnHookRenewaling bool = true
 	if l.isStatusRenewing == true { //通知取消重试Redis分布式锁续约
 		l.isStatusRenewing = false
+		isUnHookRenewaling = false
 		manager.GetInstallCountDownManager().RemoveCd("___countdown_cd_redis_unlock_renewing_str" + l.uniqueId)
 	}
+	defer func() {
+		if isUnHookRenewaling {
+			l.unlockChan <- struct{}{}
+		}
+	}()
 	cnt, err := l.client.Eval(ctx, lua2UnLock, []string{l.key}, l.value).Int64()
 	if err == redis.Nil {
 		//执行报错
