@@ -23,4 +23,6 @@ var (
 	ErrRedisLockFailedNeedTry = errors.New("redis cache: lock need try")
 	//操作超时
 	ErrRedisTimeout = errors.New("redis cache: timeout")
+	//超出重试次数限制
+	ErrRetryLimitExceeded = errors.New("retry limit exceeded")
 )

@@ -5,6 +5,7 @@ go 1.25.2
 require (
 	github.com/google/uuid v1.6.0
 	github.com/redis/go-redis/v9 v9.16.0
+	golang.org/x/sync v0.17.0
 )
 
 require (

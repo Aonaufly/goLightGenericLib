@@ -4,11 +4,13 @@ package cache
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"github.com/Aonaufly/goLightGenericLib/manager"
 	"github.com/Aonaufly/goLightGenericLib/myErrors"
 	"github.com/Aonaufly/goLightGenericLib/types"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
 	"strings"
 	"time"
 )
@@ -32,6 +34,8 @@ type RedisDistributedLock struct {
 	isLockingStatus bool
 	//唯一ID，countdown有效
 	uniqueId string
+	//实现singleflight抢锁机制
+	g *singleflight.Group
 }
 
 // 重置
@@ -49,8 +53,59 @@ func (rl *RedisDistributedLock) Clear() {
 	}
 }
 
+// #region singleflight抢锁
+func (rl *RedisDistributedLock) AutoLock(
+	ctx context.Context,
+	key string,
+	expiration time.Duration,
+	timeout time.Duration,
+	retry *types.FixIntervalRetry,
+) (*RedisDistributedRenewalAndUnlock, error) {
+	var timer *time.Timer
+	value := uuid.New().String() //锁的值
+	for {
+		lctx, cancel := context.WithTimeout(ctx, timeout)
+		res, err := rl.client.Eval(lctx, lua2lock, []string{key}, []any{value, expiration.Seconds()}).Result()
+		if err != nil && errors.Is(err, context.DeadlineExceeded) {
+			types.GetInstallFixIntervalRetryManager().Put(retry)
+			return nil, err
+		}
+		if res == "OK" { //加锁成功了
+			item, e := GetInstallRedisDistributeRenewalAndUnlockResManager().Get(
+				rl.client,
+				key,
+				value,
+				expiration,
+			)
+			if e == nil {
+				rl.item = item
+			}
+			types.GetInstallFixIntervalRetryManager().Put(retry)
+			return item, nil
+		}
+		cancel()
+		interval, ok := retry.Next()
+		if !ok { //超过了重试次数
+			return nil, myErrors.ErrRetryLimitExceeded
+		}
+		if timer == nil {
+			timer = time.NewTimer(interval)
+		} else {
+			timer.Reset(interval)
+		}
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			types.GetInstallFixIntervalRetryManager().Put(retry)
+			return nil, ctx.Err()
+		}
+	}
+}
+
+//#endregion
+
 // 可以尝试多次加锁，避免一次锁定失败 API ***************************************************************************************************
-func (rl *RedisDistributedLock) TryLock(
+func (rl *RedisDistributedLock) AutoLockWithHook(
 	ctx context.Context,
 	key string,
 	expiration time.Duration,
@@ -175,29 +230,24 @@ func (rl *RedisDistributedLock) countdown4Lock(flag string, curCD time.Duration,
 // 只加一次锁，有可能失败
 func (rl *RedisDistributedLock) stepLock(ctx context.Context, key string, val string, expiration time.Duration) (*RedisDistributedRenewalAndUnlock, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	//原子操作
-	ok := rl.client.Eval(ctx, lua2lock, []string{key}, []any{val, expiration}).String()
+	//原子性操作
+	res, err := rl.client.Eval(ctx, lua2lock, []string{key}, []any{val, expiration}).Result()
 	cancel()
-	select {
-	case <-ctx.Done():
-		return nil, myErrors.ErrRedisTimeout
-	default:
-		if ok == "" {
-			//别人抢到了锁
-			return nil, myErrors.ErrFailedToRedisPreemptLock
-		} else if ok == "OK" {
-			//计入对象池，用来提高性能, 获得一个续约/解锁的item
-			item, e := GetInstallRedisDistributeRenewalAndUnlockResManager().Get(
-				rl.client,
-				key,
-				val,
-				expiration,
-			)
-			if e == nil {
-				rl.item = item
-			}
-			return item, nil
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
+	if res == "OK" {
+		item, e := GetInstallRedisDistributeRenewalAndUnlockResManager().Get(
+			rl.client,
+			key,
+			val,
+			expiration,
+		)
+		if e == nil {
+			rl.item = item
 		}
+		return item, nil
+	} else {
 		return nil, myErrors.ErrRedisLockFailedNeedTry
 	}
 }
@@ -245,7 +295,7 @@ func (l *RedisDistributedRenewalAndUnlock) Renewal(ctx context.Context) error {
 // everyRetry 每次续约的重试策略
 // expiration 间隔多长时间开始续约
 // callback 钩子函数
-func (l *RedisDistributedRenewalAndUnlock) AutoRenewal(maxRenewingCnt uint, expiration time.Duration, everyRetry types.FixIntervalRetry, callback types.ErrHookProgress) {
+func (l *RedisDistributedRenewalAndUnlock) AutoRenewalWithHook(maxRenewingCnt uint, expiration time.Duration, everyRetry types.FixIntervalRetry, callback types.ErrHookProgress) {
 	if l.isStatusRenewing == false {
 		l.isStatusRenewing = true
 	} else {

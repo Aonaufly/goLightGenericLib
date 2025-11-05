@@ -25,7 +25,7 @@ func (f *FixIntervalRetry) Reset(Interval time.Duration, Max int) {
 }
 
 func (f *FixIntervalRetry) Clear() {
-
+	f.CurIndex = 0
 }
 
 func (f *FixIntervalRetry) Next() (time.Duration, bool) {
