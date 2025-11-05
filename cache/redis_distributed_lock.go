@@ -340,6 +340,9 @@ func (rl *RedisDistributedRenewalAndUnlock) AutoRenewal(
 ) error {
 	timeoutChan := make(chan struct{}, 1)
 	ticker := time.NewTicker(interval)
+	for len(rl.unlockChan) > 0 {
+		<-rl.unlockChan
+	}
 	for {
 		select {
 		case <-ticker.C:
